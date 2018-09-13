@@ -26,16 +26,16 @@ namespace kinematics {
 	/**
 	 * Perturbe the poses a little based on the sigma.
 	 */
-	std::vector<glm::dmat3x3> LinkageSynthesis::perturbPoses(const std::vector<glm::dmat3x3>& poses, std::pair<double, double>& sigmas, double& position_error, double& orientation_error) {
+	std::vector<glm::dmat3x3> LinkageSynthesis::perturbPoses(const std::vector<glm::dmat3x3>& poses, std::pair<double, double>& sigmas, std::default_random_engine& generator, double& position_error, double& orientation_error) {
 		std::vector<glm::dmat3x3> perturbed_poses = poses;
 
 		position_error = 0.0;
 		orientation_error = 0.0;
 
 		for (int i = 1; i < perturbed_poses.size() - 1; i++) {
-			double e1 = genNormal(0, sigmas.first);
-			double e2 = genNormal(0, sigmas.first);
-			double delta_theta = genNormal(0, sigmas.second);
+			double e1 = genRand(generator, -sigmas.first, sigmas.first);
+			double e2 = genRand(generator, -sigmas.first, sigmas.first);
+			double delta_theta = genRand(generator, -sigmas.second, sigmas.second);
 
 			perturbed_poses[i][2][0] += e1;
 			perturbed_poses[i][2][1] += e2;
@@ -96,19 +96,9 @@ namespace kinematics {
 		dist_map.convertTo(dist_map, CV_64F);
 	}
 
-	void LinkageSynthesis::particleFilter(std::vector<Solution>& solutions, const std::vector<glm::dvec2>& linkage_region_pts, const cv::Mat& dist_map, const BBox& dist_map_bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, const Object25D& moving_body, int num_particles, int num_iterations, bool record_file) {
-		BBox linkage_region_bbox = boundingBox(linkage_region_pts);
-
+	void LinkageSynthesis::particleFilter(const std::vector<glm::dmat3x3>& poses, std::vector<Solution>& solutions, const cv::Mat& dist_map, const BBox& dist_map_bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, const Object25D& moving_body, int num_particles, int num_iterations, bool record_file) {
 		std::vector<Solution> particles(std::max((int)solutions.size(), num_particles));
 		double max_cost = 0;
-
-		/*
-		for (int i = 0; i < solutions.size(); i++) {
-			double cost = calculateCost(solutions[i], moving_body, dist_map, dist_map_bbox);
-			max_cost = std::max(max_cost, cost);
-			particles[i] = Particle(cost, solutions[i]);
-		}
-		*/
 
 		// augment
 		for (int i = 0; i < particles.size(); i++) {
@@ -137,6 +127,8 @@ namespace kinematics {
 			(*out) << mean_val << "," << sd_val << "\n";
 		}
 
+		std::default_random_engine generator(0);
+
 		// particle filter
 		for (int iter = 0; iter < num_iterations; iter++) {
 			const int NUM_THREADS = 8;
@@ -146,7 +138,8 @@ namespace kinematics {
 				int offset1 = i * particles.size() / NUM_THREADS;
 				int offset2 = (i + 1) * particles.size() / NUM_THREADS;
 				new_particles[i] = std::vector<Solution>(particles.begin() + offset1, particles.begin() + offset2);
-				threads[i] = boost::thread(&LinkageSynthesis::particleFilterThread, this, boost::ref(new_particles[i]), boost::ref(linkage_region_pts), boost::ref(linkage_region_bbox), boost::ref(dist_map), boost::ref(dist_map_bbox), boost::ref(linkage_avoidance_pts), boost::ref(moving_body));
+				int id = iter * NUM_THREADS + i;
+				threads[i] = boost::thread(&LinkageSynthesis::particleFilterThread, this, id, boost::ref(poses), boost::ref(new_particles[i]), boost::ref(dist_map), boost::ref(dist_map_bbox), boost::ref(linkage_avoidance_pts), boost::ref(moving_body));
 			}
 			for (int i = 0; i < threads.size(); i++) {
 				threads[i].join();
@@ -158,7 +151,7 @@ namespace kinematics {
 			}
 
 			// calculate the weights of particles
-			resample(particles, num_particles, particles, max_cost);
+			resample(particles, num_particles, particles, max_cost, generator);
 
 			if (record_file) {
 				std::vector<double> values;
@@ -187,18 +180,24 @@ namespace kinematics {
 		solutions = particles;
 	}
 
-	void LinkageSynthesis::particleFilterThread(std::vector<Solution>& particles, const std::vector<glm::dvec2>& linkage_region_pts, const BBox& bbox, const cv::Mat& dist_map, const BBox& dist_map_bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, const Object25D& moving_body) {
+	void LinkageSynthesis::particleFilterThread(int thread_id, const std::vector<glm::dmat3x3>& poses, std::vector<Solution>& particles, const cv::Mat& dist_map, const BBox& dist_map_bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, const Object25D& moving_body) {
+		std::default_random_engine generator(thread_id);
+		double perturb_size = 1;
+
 		// perturb the particles and calculate its score
 		for (int i = 0; i < particles.size(); i++) {
+			// perturbe the poses a little
+			particles[i].poses = perturbPoses(poses, sigmas, generator, particles[i].position_error, particles[i].orientation_error);
+
 			// pertube the joints
 			for (int j = 0; j < particles[i].points.size(); j++) {
-				particles[i].points[j].x += genRand(-1, 1);
-				particles[i].points[j].y += genRand(-1, 1);
+				particles[i].points[j].x += genRand(generator, -perturb_size, perturb_size);
+				particles[i].points[j].y += genRand(generator, -perturb_size, perturb_size);
 			}
 
-			if (optimizeCandidate(particles[i].poses, linkage_region_pts, bbox, particles[i].points)) {
+			if (optimizeCandidate(particles[i].poses, particles[i].points)) {
 				// check the hard constraints
-				if (checkHardConstraints(particles[i].points, particles[i].poses, linkage_region_pts, linkage_avoidance_pts, moving_body, particles[i].zorder)) {
+				if (checkHardConstraints(particles[i].points, particles[i].poses, linkage_avoidance_pts, moving_body, particles[i].zorder)) {
 					// calculate the score
 					particles[i].cost = calculateCost(particles[i], moving_body, dist_map, dist_map_bbox);
 				}
@@ -222,7 +221,7 @@ namespace kinematics {
 	* @param resampled_particles	new resmapled particles
 	* @param max_cost				maximum cost, which is used to normalized the cost for calculating the weight
 	*/
-	void LinkageSynthesis::resample(std::vector<Solution> particles, int N, std::vector<Solution>& resampled_particles, double max_cost) {
+	void LinkageSynthesis::resample(std::vector<Solution> particles, int N, std::vector<Solution>& resampled_particles, double max_cost, std::default_random_engine& generator) {
 		// calculate the weights of particles
 		int best_index = -1;
 		double min_cost = std::numeric_limits<double>::max();
@@ -257,7 +256,7 @@ namespace kinematics {
 		resampled_particles.resize(N);
 		resampled_particles[0] = particles[best_index];
 		for (int i = 1; i < N; i++) {
-			double r = genRand();
+			double r = genRand(generator);
 			auto it = std::lower_bound(weights.begin(), weights.end(), r);
 			int index = it - weights.begin();
 			resampled_particles[i] = particles[index];

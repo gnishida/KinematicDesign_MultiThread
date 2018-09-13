@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtx/norm.hpp>
 #include <vector>
+#include <random>
 #include <boost/geometry.hpp>
 #include <boost/geometry/core/point_type.hpp>
 #include <boost/geometry/geometries/point.hpp>
@@ -63,10 +64,10 @@ namespace kinematics {
 	const double M_PI = 3.14159265;
 	const double TOL = 0.0000001;
 
-	double genRand();
-	double genRand(double a, double b);
-	double genNormal();
-	double genNormal(double myu, double sigma);
+	double genRand(std::default_random_engine& generator);
+	double genRand(std::default_random_engine& generator, double a, double b);
+	double genNormal(std::default_random_engine& generator);
+	double genNormal(std::default_random_engine& generator, double myu, double sigma);
 
 	glm::dvec2 circleCircleIntersection(const glm::dvec2& center1, double radius1, const glm::dvec2& center2, double radius);
 	glm::dvec2 circleCircleIntersection(const glm::dvec2& center1, double radius1, const glm::dvec2& center2, double radius, const glm::dvec2& prev_int);

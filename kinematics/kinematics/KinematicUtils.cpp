@@ -1,29 +1,25 @@
 #include "KinematicUtils.h"
-#include <random>
 #include "clipper.hpp"
 
 namespace kinematics {
 
-	std::default_random_engine rnd_generator;
-
-	double genRand() {
-		return rand() / (float(RAND_MAX) + 1);
-		//std::uniform_real_distribution<double> distribution(0, 1);
-		//return distribution(rnd_generator);
+	double genRand(std::default_random_engine& generator) {
+		std::uniform_real_distribution<double> distribution(0, 1);
+		return distribution(generator);
 	}
 
-	double genRand(double a, double b) {
-		return genRand() * (b - a) + a;
+	double genRand(std::default_random_engine& generator, double a, double b) {
+		return genRand(generator) * (b - a) + a;
 	}
 
-	double genNormal() {
-		return genNormal(0.0, 1.0);
+	double genNormal(std::default_random_engine& generator) {
+		std::normal_distribution<double> distribution(0, 1);
+		return distribution(generator);
 	}
 
-	double genNormal(double myu, double sigma) {
+	double genNormal(std::default_random_engine& generator, double myu, double sigma) {
 		if (sigma == 0) return myu;
-		std::normal_distribution<double> distribution(myu, sigma);
-		return distribution(rnd_generator);
+		return genNormal(generator) * sigma + myu;
 	}
 
 	/**

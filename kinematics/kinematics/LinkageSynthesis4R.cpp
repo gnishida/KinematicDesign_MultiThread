@@ -44,7 +44,7 @@ namespace kinematics {
 		std::vector<boost::thread> threads(NUM_THREADS);
 		std::vector<std::vector<Solution>> sub_solutions(NUM_THREADS);
 		for (int i = 0; i < threads.size(); i++) {
-			threads[i] = boost::thread(&LinkageSynthesis4R::calculateSolutionThread, this, boost::ref(poses), boost::ref(linkage_region_pts), boost::ref(bbox), boost::ref(linkage_avoidance_pts), num_samples / NUM_THREADS, boost::ref(moving_body), boost::ref(sub_solutions[i]));
+			threads[i] = boost::thread(&LinkageSynthesis4R::calculateSolutionThread, this, i, boost::ref(poses), boost::ref(linkage_region_pts), boost::ref(bbox), boost::ref(linkage_avoidance_pts), num_samples / NUM_THREADS, boost::ref(moving_body), boost::ref(sub_solutions[i]));
 		}
 		for (int i = 0; i < threads.size(); i++) {
 			threads[i].join();
@@ -56,28 +56,30 @@ namespace kinematics {
 		}
 	}
 
-	void LinkageSynthesis4R::calculateSolutionThread(const std::vector<glm::dmat3x3>& poses, const std::vector<glm::dvec2>& linkage_region_pts, const BBox& bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, int num_samples, const Object25D& moving_body, std::vector<Solution>& solutions) {
+	void LinkageSynthesis4R::calculateSolutionThread(int thread_id, const std::vector<glm::dmat3x3>& poses, const std::vector<glm::dvec2>& linkage_region_pts, const BBox& bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, int num_samples, const Object25D& moving_body, std::vector<Solution>& solutions) {
+		std::default_random_engine generator(thread_id);
+
 		for (int iter = 0; iter < num_samples; iter++) {
 			// perturbe the poses a little
 			double position_error = 0.0;
 			double orientation_error = 0.0;
-			std::vector<glm::dmat3x3> perturbed_poses = perturbPoses(poses, sigmas, position_error, orientation_error);
+			std::vector<glm::dmat3x3> perturbed_poses = perturbPoses(poses, sigmas, generator, position_error, orientation_error);
 
 			// sample joints within the linkage region
 			std::vector<glm::dvec2> points(4);
 			for (int i = 0; i < points.size(); i++) {
 				while (true) {
-					points[i] = glm::dvec2(genRand(bbox.minPt.x, bbox.maxPt.x), genRand(bbox.minPt.y, bbox.maxPt.y));
+					points[i] = glm::dvec2(genRand(generator, bbox.minPt.x, bbox.maxPt.x), genRand(generator, bbox.minPt.y, bbox.maxPt.y));
 					if (withinPolygon(linkage_region_pts, points[i])) break;
 				}
 			}
 
-			if (!optimizeCandidate(perturbed_poses, linkage_region_pts, bbox, points)) continue;
+			if (!optimizeCandidate(perturbed_poses, points)) continue;
 
 			// check hard constraints
 			std::vector<std::vector<int>> zorder;
 
-			if (!checkHardConstraints(points, perturbed_poses, linkage_region_pts, linkage_avoidance_pts, moving_body, zorder)) continue;
+			if (!checkHardConstraints(points, perturbed_poses, linkage_avoidance_pts, moving_body, zorder)) continue;
 			solutions.push_back(Solution(0, points, position_error, orientation_error, perturbed_poses, zorder));
 		}
 	}
@@ -86,24 +88,24 @@ namespace kinematics {
 	 * Optimize the linkage parameters based on the rigidity constraints.
 	 * If it fails to optimize, return false.
 	 */
-	bool LinkageSynthesis4R::optimizeCandidate(const std::vector<glm::dmat3x3>& poses, const std::vector<glm::dvec2>& linkage_region_pts, const BBox& bbox, std::vector<glm::dvec2>& points) {
+	bool LinkageSynthesis4R::optimizeCandidate(const std::vector<glm::dmat3x3>& poses, std::vector<glm::dvec2>& points) {
 		if (poses.size() == 2) {
-			if (!optimizeLinkForTwoPoses(poses, linkage_region_pts, points[0], points[2])) return false;
-			if (!optimizeLinkForTwoPoses(poses, linkage_region_pts, points[1], points[3])) return false;
+			if (!optimizeLinkForTwoPoses(poses, points[0], points[2])) return false;
+			if (!optimizeLinkForTwoPoses(poses, points[1], points[3])) return false;
 		}
 		else if (poses.size() == 3) {
-			if (!optimizeLinkForThreePoses(poses, linkage_region_pts, points[0], points[2])) return false;
-			if (!optimizeLinkForThreePoses(poses, linkage_region_pts, points[1], points[3])) return false;
+			if (!optimizeLinkForThreePoses(poses, points[0], points[2])) return false;
+			if (!optimizeLinkForThreePoses(poses, points[1], points[3])) return false;
 		}
 		else {
-			if (!optimizeLink(poses, linkage_region_pts, bbox, points[0], points[2])) return false;
-			if (!optimizeLink(poses, linkage_region_pts, bbox, points[1], points[3])) return false;
+			if (!optimizeLink(poses, points[0], points[2])) return false;
+			if (!optimizeLink(poses, points[1], points[3])) return false;
 		}
 
 		return true;
 	}
 
-	bool LinkageSynthesis4R::optimizeLink(const std::vector<glm::dmat3x3>& poses, const std::vector<glm::dvec2>& linkage_region_pts, const BBox& bbox, glm::dvec2& A0, glm::dvec2& A1) {
+	bool LinkageSynthesis4R::optimizeLink(const std::vector<glm::dmat3x3>& poses, glm::dvec2& A0, glm::dvec2& A1) {
 		// setup the initial parameters for optimization
 		column_vector starting_point(4);
 		starting_point(0, 0) = A0.x;
@@ -118,10 +120,6 @@ namespace kinematics {
 			A0.y = starting_point(1, 0);
 			A1.x = starting_point(2, 0);
 			A1.y = starting_point(3, 0);
-
-			// if the joints are outside the valid region, discard it.
-			if (!withinPolygon(linkage_region_pts, A0)) return false;
-			if (!withinPolygon(linkage_region_pts, A1)) return false;
 		}
 		catch (std::exception& e) {
 			return false;
@@ -130,7 +128,7 @@ namespace kinematics {
 		return true;
 	}
 
-	bool LinkageSynthesis4R::optimizeLinkForThreePoses(const std::vector<glm::dmat3x3>& poses, const std::vector<glm::dvec2>& linkage_region_pts, glm::dvec2& A0, glm::dvec2& A1) {
+	bool LinkageSynthesis4R::optimizeLinkForThreePoses(const std::vector<glm::dmat3x3>& poses, glm::dvec2& A0, glm::dvec2& A1) {
 		// calculate the local coordinate of A1
 		glm::dvec2 a = glm::dvec2(glm::inverse(poses[0]) * glm::dvec3(A1, 1));
 
@@ -139,12 +137,6 @@ namespace kinematics {
 
 		try {
 			A0 = circleCenterFromThreePoints(A1, A2, A3);
-
-			// if the center point is outside the valid region, discard it.
-			if (!withinPolygon(linkage_region_pts, A0)) return false;
-
-			// if the moving point is outside the valid region, discard it.
-			//if (!withinPolygon(linkage_region_pts, A1)) return false;
 		}
 		catch (char* ex) {
 			return false;
@@ -153,7 +145,7 @@ namespace kinematics {
 		return true;
 	}
 
-	bool LinkageSynthesis4R::optimizeLinkForTwoPoses(const std::vector<glm::dmat3x3>& poses, const std::vector<glm::dvec2>& linkage_region_pts, glm::dvec2& A0, glm::dvec2& A1) {
+	bool LinkageSynthesis4R::optimizeLinkForTwoPoses(const std::vector<glm::dmat3x3>& poses, glm::dvec2& A0, glm::dvec2& A1) {
 		// calculate the local coordinate of A1
 		glm::dvec2 a = glm::dvec2(glm::inverse(poses[0]) * glm::dvec3(A1, 1));
 
@@ -166,16 +158,13 @@ namespace kinematics {
 
 		A0 = M + h * glm::dot(A0 - M, h);
 
-		// if the center point is outside the valid region, discard it.
-		if (!withinPolygon(linkage_region_pts, A0)) return false;
-
 		return true;
 	}
 
 	Solution LinkageSynthesis4R::findBestSolution(const std::vector<glm::dmat3x3>& poses, std::vector<Solution>& solutions, const std::vector<glm::dvec2>& linkage_region_pts, const cv::Mat& dist_map, const BBox& dist_map_bbox, const std::vector<glm::dvec2>& linkage_avoidance_pts, const Object25D& moving_body, int num_particles, int num_iterations, bool record_file) {
 		// select the best solution based on the objective function
 		if (solutions.size() > 0) {
-			particleFilter(solutions, linkage_region_pts, dist_map, dist_map_bbox, linkage_avoidance_pts, moving_body, num_particles, num_iterations, record_file);
+			particleFilter(poses, solutions, dist_map, dist_map_bbox, linkage_avoidance_pts, moving_body, num_particles, num_iterations, record_file);
 			return solutions[0];
 		}
 		else {
@@ -247,7 +236,7 @@ namespace kinematics {
 		kin.diagram.addBody(kin.diagram.joints[2], kin.diagram.joints[3], moving_body);
 	}
 
-	bool LinkageSynthesis4R::checkHardConstraints(std::vector<glm::dvec2>& points, const std::vector<glm::dmat3x3>& poses, const std::vector<glm::dvec2>& linkage_region_pts, const std::vector<glm::dvec2>& linkage_avoidance_pts, const Object25D& moving_body, std::vector<std::vector<int>>& zorder) {
+	bool LinkageSynthesis4R::checkHardConstraints(std::vector<glm::dvec2>& points, const std::vector<glm::dmat3x3>& poses, const std::vector<glm::dvec2>& linkage_avoidance_pts, const Object25D& moving_body, std::vector<std::vector<int>>& zorder) {
 		if (glm::length(points[0] - points[1]) < min_link_length) return false;
 		if (glm::length(points[2] - points[3]) < min_link_length) return false;
 
