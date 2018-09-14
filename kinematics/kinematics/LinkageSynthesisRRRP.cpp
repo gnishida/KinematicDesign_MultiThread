@@ -92,16 +92,7 @@ namespace kinematics {
 	* If it fails to opotimize, return false.
 	*/
 	bool LinkageSynthesisRRRP::optimizeCandidate(const std::vector<glm::dmat3x3>& poses, std::vector<glm::dvec2>& points) {
-		if (poses.size() == 2) {
-			if (!optimizeLinkForTwoPoses(poses, points[0], points[2])) return false;
-		}
-		else if (poses.size() == 3) {
-			if (!optimizeLinkForThreePoses(poses, points[0], points[2])) return false;
-		}
-		else {
-			if (!optimizeLink(poses, points[0], points[2])) return false;
-		}
-
+		if (!optimizeLink(poses, points[0], points[2])) return false;
 		if (!optimizeSlider(poses, points[1], points[3])) return false;
 
 		return true;
@@ -126,39 +117,6 @@ namespace kinematics {
 		catch (std::exception& e) {
 			return false;
 		}
-
-		return true;
-	}
-
-	bool LinkageSynthesisRRRP::optimizeLinkForThreePoses(const std::vector<glm::dmat3x3>& poses, glm::dvec2& A0, glm::dvec2& A1) {
-		// calculate the local coordinate of A1
-		glm::dvec2 a = glm::dvec2(glm::inverse(poses[0]) * glm::dvec3(A1, 1));
-
-		glm::dvec2 A2(poses[1] * glm::dvec3(a, 1));
-		glm::dvec2 A3(poses[2] * glm::dvec3(a, 1));
-
-		try {
-			A0 = circleCenterFromThreePoints(A1, A2, A3);
-		}
-		catch (char* ex) {
-			return false;
-		}
-
-		return true;
-	}
-
-	bool LinkageSynthesisRRRP::optimizeLinkForTwoPoses(const std::vector<glm::dmat3x3>& poses, glm::dvec2& A0, glm::dvec2& A1) {
-		// calculate the local coordinate of A1
-		glm::dvec2 a = glm::dvec2(glm::inverse(poses[0]) * glm::dvec3(A1, 1));
-
-		glm::dvec2 A2(poses[1] * glm::dvec3(a, 1));
-
-		glm::dvec2 M = (A1 + A2) * 0.5;
-		glm::dvec2 v = A1 - A2;
-		v /= glm::length(v);
-		glm::dvec2 h(-v.y, v.x);
-
-		A0 = M + h * glm::dot(A0 - M, h);
 
 		return true;
 	}
